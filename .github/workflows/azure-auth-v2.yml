@@ -1,0 +1,51 @@
+name: Azure Auth v2
+on:
+  push:
+    paths: ['.github/workflows/azure-auth-v2.yml']
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Azure workload identity federation test
+        run: |
+          # Get OIDC token for AzureADTokenExchange (the standard audience for Azure WIF)
+          OIDC_TOKEN=$(curl -sS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" \
+            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" | jq -r .value)
+          echo "OIDC token length: ${#OIDC_TOKEN}"
+          echo "OIDC sub: $(echo $OIDC_TOKEN | cut -d. -f2 | base64 -d 2>/dev/null | jq -r .sub)"
+          
+          TENANT="398a6654-997b-47e9-b12b-9515b896b4de"
+          CLIENT_ID="adb907fd-188c-4029-b67f-2559d96b2f1b"
+          
+          # Method 1: Federated credential token exchange (correct format)
+          echo "=== Method 1: WIF token exchange (Azure Management scope) ==="
+          curl -s -X POST \
+            "https://login.microsoftonline.com/${TENANT}/oauth2/v2.0/token" \
+            --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer" \
+            --data-urlencode "assertion=${OIDC_TOKEN}" \
+            --data-urlencode "client_id=${CLIENT_ID}" \
+            --data-urlencode "scope=https://management.azure.com/.default" \
+            --data-urlencode "requested_token_use=on_behalf_of"
+          
+          echo ""
+          echo "=== Method 2: WIF with Azure DevOps scope ==="
+          curl -s -X POST \
+            "https://login.microsoftonline.com/${TENANT}/oauth2/v2.0/token" \
+            --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer" \
+            --data-urlencode "assertion=${OIDC_TOKEN}" \
+            --data-urlencode "client_id=${CLIENT_ID}" \
+            --data-urlencode "scope=499b84ac-1321-427f-aa17-267ca6975798/.default" \
+            --data-urlencode "requested_token_use=on_behalf_of"
+          
+          echo ""
+          echo "=== Method 3: Client credentials with federated assertion ==="
+          curl -s -X POST \
+            "https://login.microsoftonline.com/${TENANT}/oauth2/v2.0/token" \
+            -d "grant_type=client_credentials" \
+            -d "client_id=${CLIENT_ID}" \
+            -d "client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer" \
+            --data-urlencode "client_assertion=${OIDC_TOKEN}" \
+            -d "scope=https://management.azure.com/.default"
