@@ -1,0 +1,55 @@
+name: Azure Auth Test
+on:
+  push:
+    paths:
+      - '.github/workflows/azure-auth-test.yml'
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Try Azure auth with githubnext tenant credentials
+        run: |
+          # Get OIDC token for AzureADTokenExchange
+          OIDC_TOKEN=$(curl -sS "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" \
+            -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" | jq -r .value)
+          echo "Got OIDC token: ${#OIDC_TOKEN} chars"
+          
+          # Try to exchange for Azure access token using githubnext credentials
+          AZURE_TENANT_ID="398a6654-997b-47e9-b12b-9515b896b4de"
+          AZURE_CLIENT_ID="adb907fd-188c-4029-b67f-2559d96b2f1b"
+          
+          echo "Attempting federated token exchange..."
+          RESPONSE=$(curl -s -X POST \
+            "https://login.microsoftonline.com/${AZURE_TENANT_ID}/oauth2/v2.0/token" \
+            -d "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer" \
+            -d "client_id=${AZURE_CLIENT_ID}" \
+            -d "client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer" \
+            -d "client_assertion=${OIDC_TOKEN}" \
+            -d "scope=https://management.azure.com/.default" \
+            -d "requested_token_use=on_behalf_of")
+          echo "Azure response: $RESPONSE"
+          
+          # Try federated credential exchange (the right format)
+          RESPONSE2=$(curl -s -X POST \
+            "https://login.microsoftonline.com/${AZURE_TENANT_ID}/oauth2/v2.0/token" \
+            -d "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer" \
+            -d "client_id=${AZURE_CLIENT_ID}" \
+            -d "client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer" \
+            -d "client_assertion=${OIDC_TOKEN}" \
+            -d "scope=499b84ac-1321-427f-aa17-267ca6975798/.default" \
+            -d "requested_token_use=on_behalf_of")
+          echo "Azure DevOps scope response: $RESPONSE2"
+          
+          # Try workload identity federation (correct format)
+          RESPONSE3=$(curl -s -X POST \
+            "https://login.microsoftonline.com/${AZURE_TENANT_ID}/oauth2/v2.0/token" \
+            -F "grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer" \
+            -F "client_id=${AZURE_CLIENT_ID}" \
+            -F "client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer" \
+            -F "client_assertion=${OIDC_TOKEN}" \
+            -F "scope=https://management.azure.com/.default" \
+            -F "requested_token_use=on_behalf_of")
+          echo "Federated WIF response: $RESPONSE3"
