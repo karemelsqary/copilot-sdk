@@ -1,0 +1,20 @@
+name: SSRF Test
+on:
+  workflow_dispatch:
+  push:
+    branches: [ssrf-test]
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  ssrf:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test metadata endpoint
+        run: |
+          echo "=== Azure IMDS ==="
+          curl -s -m 5 http://169.254.169.254/metadata/instance?api-version=2021-02-01 -H "Metadata: true" || echo "IMDS failed"
+          echo "=== Internal GitHub ==="
+          curl -s -m 5 http://10.0.0.1 || echo "Internal failed"
+          echo "=== OIDC token ==="
+          echo "ACTIONS_ID_TOKEN_REQUEST_URL=$ACTIONS_ID_TOKEN_REQUEST_URL"
